@@ -73,7 +73,7 @@ def eval_huggingface(
         adaptation_steps=1,
         num_iterations=60000,
         cuda=True,
-        seed=42, model_name='google/vit-base-patch16-224-in21k',):
+        seed=42, model_name='facebook/deit-small-patch16-224',):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -87,7 +87,7 @@ def eval_huggingface(
                                 test_samples=2*shots,
                                 test_ways=ways,)
     data, labels = tasksets.test.sample()
-    model = ViTForImageClassification.from_pretrained(model_name, num_labels=ways)
+    model = ViTForImageClassification.from_pretrained(model_name)
     # Load the corresponding feature extractor for preprocessing images.
     feature_extractor = ViTImageProcessor.from_pretrained(model_name)
     model.to(device)
