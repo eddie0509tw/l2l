@@ -19,7 +19,7 @@ from torch import nn, optim
 
 import learn2learn as l2l
 
-from tools.utils import accuracy
+from tools.utils import accuracy, parameter_cnt
 from transformers import ViTForImageClassification, ViTImageProcessor
 from dats.dataset import create_miniimgnat
 
@@ -103,7 +103,7 @@ def get_model(model_name='google/vit-base-patch16-224-in21k', ways=5):
 def main(
         model,
         ways=5,
-        shots=5,
+        shots=1,
         meta_lr=0.0001,
         fast_lr=0.1,
         meta_batch_size=32,
@@ -126,7 +126,8 @@ def main(
                                 train_ways=ways,
                                 test_samples=2*shots,
                                 test_ways=ways,)
-
+    params_num = parameter_cnt(model)
+    print(f"Model has {params_num} parameters") 
     # Create model
     model.to(device)
     maml = l2l.algorithms.MAML(model, lr=fast_lr, first_order=False)
