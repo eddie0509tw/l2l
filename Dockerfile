@@ -7,13 +7,24 @@ FROM pytorch/pytorch:${PYTORCH}-cuda${CUDA}-cudnn${CUDNN}-devel
 ARG DEBIAN_FRONTEND=noninteractive
 
 # apt install required packages
-RUN apt-get update \
-    && apt-get install -y ffmpeg libsm6 libxext6 ninja-build libglib2.0-0 \
-    libsm6 libxrender-dev libxext6 libjpeg libpng\
-    git wget sudo htop tmux \
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    ninja-build \
+    libglib2.0-0 \
+    libxrender-dev \
+    libjpeg-dev \
+    libpng-dev \
+    git \
+    wget \
+    sudo \
+    htop \
+    tmux \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+
 WORKDIR /workspace
