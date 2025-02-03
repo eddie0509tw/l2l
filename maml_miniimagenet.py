@@ -11,8 +11,10 @@ To contrast the use of the benchmark interface with directly instantiating mini-
 
 import random
 import numpy as np
+import os
 
 import torch
+torch.backends.cuda.sdp_kernel.enabled = False
 from torch import nn, optim
 
 import learn2learn as l2l
@@ -25,8 +27,6 @@ from dats.dataset import create_miniimgnat
 def fast_adapt(batch, learner, loss, adaptation_steps, shots, ways, device):
     data, labels = batch
     data, labels = data.to(device), labels.to(device)
-    labels = labels.long()
-    print(labels)
     # Separate data into adaptation/evalutation sets
     adaptation_indices = np.zeros(data.size(0), dtype=bool)
     adaptation_indices[np.arange(shots*ways) * 2] = True
@@ -40,7 +40,7 @@ def fast_adapt(batch, learner, loss, adaptation_steps, shots, ways, device):
     for step in range(adaptation_steps):
         logits = learner(adaptation_data).logits
         adaptation_error = loss(logits, adaptation_labels)
-        learner.adapt(adaptation_error, allow_unused=True, allow_nograd=True)
+        learner.adapt(adaptation_error)
 
     # Evaluate the adapted model
     predictions = learner(evaluation_data).logits
@@ -65,15 +65,16 @@ def eval(learner, meta_batch_size, adaptation_steps, shots, ways, tasksets, loss
     return meta_test_error / meta_batch_size, meta_test_accuracy / meta_batch_size
 
 def eval_huggingface(
+        model,
         ways=5,
         shots=5,
         meta_lr=0.003,
         fast_lr=0.5,
-        meta_batch_size=32,
+        meta_batch_size=16,
         adaptation_steps=1,
         num_iterations=60000,
         cuda=True,
-        seed=42, model_name='facebook/deit-small-patch16-224',):
+        seed=42,):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -86,25 +87,31 @@ def eval_huggingface(
                                 train_ways=ways,
                                 test_samples=2*shots,
                                 test_ways=ways,)
-    data, labels = tasksets.test.sample()
-    model = ViTForImageClassification.from_pretrained(model_name)
-    # Load the corresponding feature extractor for preprocessing images.
-    feature_extractor = ViTImageProcessor.from_pretrained(model_name)
     model.to(device)
     maml = l2l.algorithms.MAML(model, lr=fast_lr, first_order=False)
     loss = nn.CrossEntropyLoss(reduction='mean')
     return eval(maml.clone(), meta_batch_size, adaptation_steps, shots, ways, tasksets, loss, device)
 
+def get_model(model_name='google/vit-base-patch16-224-in21k', ways=5):
+    model = ViTForImageClassification.from_pretrained(model_name, num_labels=ways)
+    # Optionally disable memory efficient attention in model config if available.
+    if hasattr(model.config, 'use_memory_efficient_attention'):
+        model.config.use_memory_efficient_attention = False
+    feature_extractor = ViTImageProcessor.from_pretrained(model_name)
+    return model, feature_extractor
+
 def main(
+        model,
         ways=5,
         shots=5,
-        meta_lr=0.003,
-        fast_lr=0.5,
+        meta_lr=0.0001,
+        fast_lr=0.1,
         meta_batch_size=32,
         adaptation_steps=1,
-        num_iterations=60000,
+        num_iterations=200,
         cuda=True,
         seed=42,
+        save_dir = "./weights"
 ):
     random.seed(seed)
     np.random.seed(seed)
@@ -114,17 +121,13 @@ def main(
         torch.cuda.manual_seed(seed)
         device = torch.device('cuda')
 
-    # Create Tasksets using the benchmark interface
-    tasksets = l2l.vision.benchmarks.get_tasksets('mini-imagenet',
-                                                  train_samples=2*shots,
-                                                  train_ways=ways,
-                                                  test_samples=2*shots,
-                                                  test_ways=ways,
-                                                  root='./datasets',
-    )
+    # Create Tasksets
+    tasksets = create_miniimgnat(train_samples=2*shots,
+                                train_ways=ways,
+                                test_samples=2*shots,
+                                test_ways=ways,)
 
     # Create model
-    model = l2l.vision.models.MiniImagenetCNN(ways)
     model.to(device)
     maml = l2l.algorithms.MAML(model, lr=fast_lr, first_order=False)
     opt = optim.Adam(maml.parameters(), meta_lr)
@@ -136,54 +139,63 @@ def main(
         meta_train_accuracy = 0.0
         meta_valid_error = 0.0
         meta_valid_accuracy = 0.0
-        for task in range(meta_batch_size):
-            # Compute meta-training loss
-            learner = maml.clone()
-            batch = tasksets.train.sample()
-            evaluation_error, evaluation_accuracy = fast_adapt(batch,
-                                                               learner,
-                                                               loss,
-                                                               adaptation_steps,
-                                                               shots,
-                                                               ways,
-                                                               device)
-            evaluation_error.backward()
-            meta_train_error += evaluation_error.item()
-            meta_train_accuracy += evaluation_accuracy.item()
+        with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False):
 
-            # Compute meta-validation loss
-            learner = maml.clone()
-            batch = tasksets.validation.sample()
-            evaluation_error, evaluation_accuracy = fast_adapt(batch,
-                                                               learner,
-                                                               loss,
-                                                               adaptation_steps,
-                                                               shots,
-                                                               ways,
-                                                               device)
-            meta_valid_error += evaluation_error.item()
-            meta_valid_accuracy += evaluation_accuracy.item()
+            for task in range(meta_batch_size):
+                # Compute meta-training loss
+                learner = maml.clone()
+                batch = tasksets.train.sample()
+                evaluation_error, evaluation_accuracy = fast_adapt(batch,
+                                                                learner,
+                                                                loss,
+                                                                adaptation_steps,
+                                                                shots,
+                                                                ways,
+                                                                device)
+                evaluation_error.backward()
+                meta_train_error += evaluation_error.item()
+                meta_train_accuracy += evaluation_accuracy.item()
 
-        # Print some metrics
-        print('\n')
-        print('Iteration', iteration)
-        print('Meta Train Error', meta_train_error / meta_batch_size)
-        print('Meta Train Accuracy', meta_train_accuracy / meta_batch_size)
-        print('Meta Valid Error', meta_valid_error / meta_batch_size)
-        print('Meta Valid Accuracy', meta_valid_accuracy / meta_batch_size)
+                # Compute meta-validation loss
+                learner = maml.clone()
+                batch = tasksets.validation.sample()
+                evaluation_error, evaluation_accuracy = fast_adapt(batch,
+                                                                learner,
+                                                                loss,
+                                                                adaptation_steps,
+                                                                shots,
+                                                                ways,
+                                                                device)
+                meta_valid_error += evaluation_error.item()
+                meta_valid_accuracy += evaluation_accuracy.item()
 
-        # Average the accumulated gradients and optimize
-        for p in maml.parameters():
-            p.grad.data.mul_(1.0 / meta_batch_size)
-        opt.step()
+            # Print some metrics
+            print('\n')
+            print('Iteration', iteration)
+            print('Meta Train Error', meta_train_error / meta_batch_size)
+            print('Meta Train Accuracy', meta_train_accuracy / meta_batch_size)
+            print('Meta Valid Error', meta_valid_error / meta_batch_size)
+            print('Meta Valid Accuracy', meta_valid_accuracy / meta_batch_size)
+
+            # Average the accumulated gradients and optimize
+            for p in maml.parameters():
+                p.grad.data.mul_(1.0 / meta_batch_size)
+            opt.step()
 
     meta_test_error, meta_test_accuracy = eval(maml, meta_batch_size, adaptation_steps, shots, ways, tasksets, loss, device)
     print('Meta Test Error', meta_test_error / meta_batch_size)
     print('Meta Test Accuracy', meta_test_accuracy / meta_batch_size)
 
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    maml.module.save_pretrained(save_dir)
+    feature_extractor.save_pretrained(save_dir)
+    print(f"Model and feature extractor saved to {save_dir}")
+
 
 if __name__ == '__main__':
-    # main()
-    meta_test_error, meta_test_accuracy = eval_huggingface()
-    print('Meta Test Error', meta_test_error)
-    print('Meta Test Accuracy', meta_test_accuracy)
+    model, _ = get_model()
+    main(model)
+    # meta_test_error, meta_test_accuracy = eval_huggingface()
+    # print('Meta Test Error', meta_test_error)
+    # print('Meta Test Accuracy', meta_test_accuracy)
