@@ -19,15 +19,10 @@ from torch import nn, optim
 
 import learn2learn as l2l
 
-<<<<<<< Updated upstream
-from tools.utils import accuracy, parameter_cnt
-from transformers import ViTForImageClassification, ViTImageProcessor
-=======
 from tools.utils import accuracy, parameter_cnt, trainable_parameter_cnt, get_lora_model
 from transformers import AutoModelForImageClassification, ViTForImageClassification
 from peft import LoraConfig
 
->>>>>>> Stashed changes
 from dats.dataset import create_miniimgnat
 
 
@@ -134,10 +129,7 @@ def main(
                                 train_ways=ways,
                                 test_samples=2*shots,
                                 test_ways=ways,)
-<<<<<<< Updated upstream
-    params_num = parameter_cnt(model)
-    print(f"Model has {params_num} parameters") 
-=======
+
     params = parameter_cnt(model)
     print(f"Model has {params} parameters")
 
@@ -161,7 +153,6 @@ def main(
         if param.requires_grad:
             print(name, param.shape)
 
->>>>>>> Stashed changes
     # Create model
     model.to(device)
     maml = l2l.algorithms.MAML(model, lr=fast_lr, first_order=False)
