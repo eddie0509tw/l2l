@@ -19,8 +19,15 @@ from torch import nn, optim
 
 import learn2learn as l2l
 
+<<<<<<< Updated upstream
 from tools.utils import accuracy, parameter_cnt
 from transformers import ViTForImageClassification, ViTImageProcessor
+=======
+from tools.utils import accuracy, parameter_cnt, trainable_parameter_cnt, get_lora_model
+from transformers import AutoModelForImageClassification, ViTForImageClassification
+from peft import LoraConfig
+
+>>>>>>> Stashed changes
 from dats.dataset import create_miniimgnat
 
 
@@ -40,7 +47,7 @@ def fast_adapt(batch, learner, loss, adaptation_steps, shots, ways, device):
     for step in range(adaptation_steps):
         logits = learner(adaptation_data).logits
         adaptation_error = loss(logits, adaptation_labels)
-        learner.adapt(adaptation_error)
+        learner.adapt(adaptation_error, allow_unused=True, allow_nograd=True)
 
     # Evaluate the adapted model
     predictions = learner(evaluation_data).logits
@@ -93,11 +100,11 @@ def eval_huggingface(
     return eval(maml.clone(), meta_batch_size, adaptation_steps, shots, ways, tasksets, loss, device)
 
 def get_model(model_name='google/vit-base-patch16-224-in21k', ways=5):
-    model = ViTForImageClassification.from_pretrained(model_name, num_labels=ways)
+    model = ViTForImageClassification.from_pretrained(model_name, ignore_mismatched_sizes=True, num_labels=ways)
     # Optionally disable memory efficient attention in model config if available.
     if hasattr(model.config, 'use_memory_efficient_attention'):
         model.config.use_memory_efficient_attention = False
-    feature_extractor = ViTImageProcessor.from_pretrained(model_name)
+    feature_extractor = None
     return model, feature_extractor
 
 def main(
@@ -111,7 +118,8 @@ def main(
         num_iterations=200,
         cuda=True,
         seed=42,
-        save_dir = "./weights"
+        save_dir = "./weights",
+        use_peft=False,
 ):
     random.seed(seed)
     np.random.seed(seed)
@@ -126,8 +134,34 @@ def main(
                                 train_ways=ways,
                                 test_samples=2*shots,
                                 test_ways=ways,)
+<<<<<<< Updated upstream
     params_num = parameter_cnt(model)
     print(f"Model has {params_num} parameters") 
+=======
+    params = parameter_cnt(model)
+    print(f"Model has {params} parameters")
+
+    if use_peft:
+        # Define the LoRA configuration.
+        # Adjust parameters such as r (rank), lora_alpha, and target_modules as needed.
+        lora_config = LoraConfig(
+                    r=16,
+                    lora_alpha=16,
+                    target_modules=["query", "value"],
+                    lora_dropout=0.0,
+                    bias="none",
+                    modules_to_save=["classifier"],
+        )
+        model, _ = get_lora_model(model, None, lora_config)
+
+    # Optionally, print out trainable parameters:
+    trainable_param = trainable_parameter_cnt(model)
+    print("Trainable parameters:", trainable_param)
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(name, param.shape)
+
+>>>>>>> Stashed changes
     # Create model
     model.to(device)
     maml = l2l.algorithms.MAML(model, lr=fast_lr, first_order=False)
@@ -180,7 +214,8 @@ def main(
 
             # Average the accumulated gradients and optimize
             for p in maml.parameters():
-                p.grad.data.mul_(1.0 / meta_batch_size)
+                if p.grad is not None:
+                    p.grad.data.mul_(1.0 / meta_batch_size)
             opt.step()
 
     meta_test_error, meta_test_accuracy = eval(maml, meta_batch_size, adaptation_steps, shots, ways, tasksets, loss, device)
@@ -190,7 +225,7 @@ def main(
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     maml.module.save_pretrained(save_dir)
-    feature_extractor.save_pretrained(save_dir)
+    # feature_extractor.save_pretrained(save_dir)
     print(f"Model and feature extractor saved to {save_dir}")
 
 
