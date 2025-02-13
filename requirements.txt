@@ -3,3 +3,4 @@ transformers
 lightning
 hydra-core
 peft
+higher

@@ -14,19 +14,21 @@ import numpy as np
 import os
 
 import torch
-torch.backends.cuda.sdp_kernel.enabled = False
 from torch import nn, optim
 
+import loratorch as lora
 import learn2learn as l2l
 
-from tools.utils import accuracy, parameter_cnt, trainable_parameter_cnt, get_lora_model
+from tools.utils import accuracy, parameter_cnt, trainable_parameter_cnt, get_lora_model, clone_model_weight
 from transformers import AutoModelForImageClassification, ViTForImageClassification
 from peft import LoraConfig
+from model.lora import ClassificationModel
 
 from dats.dataset import create_miniimgnat, create_omniglot
+from torch.autograd import grad
 
 
-def fast_adapt(batch, learner, loss, adaptation_steps, shots, ways, device):
+def fast_adapt(batch, learner, loss, adaptation_steps, shots, ways, device, use_custom=False):
     data, labels = batch
     data, labels = data.to(device), labels.to(device)
     # Separate data into adaptation/evalutation sets
@@ -36,16 +38,49 @@ def fast_adapt(batch, learner, loss, adaptation_steps, shots, ways, device):
     adaptation_indices = torch.from_numpy(adaptation_indices)
     adaptation_data, adaptation_labels = data[adaptation_indices], labels[adaptation_indices]
     evaluation_data, evaluation_labels = data[evaluation_indices], labels[evaluation_indices]
-
+    # learner.module.base_model.forward=learner.module.base_model.model.forward
     # Adapt the model
     logits = None
     for step in range(adaptation_steps):
-        logits = learner(adaptation_data).logits
+        if not use_custom:
+            logits = learner(adaptation_data).logits
+        else:
+            logits = learner(adaptation_data)[1]
         adaptation_error = loss(logits, adaptation_labels)
+        # # Compute gradients manually
+        # diff_params = [p for p in learner.module.parameters() if p.requires_grad]
+        # grad_params = torch.autograd.grad(
+        #     adaptation_error,
+        #     diff_params,
+        #     retain_graph=True,
+        #     create_graph=True,
+        #     allow_unused=True
+        # )
+
+        # grad_counter = 0
+        # gradients = []
+
+        # # Iterate over named parameters to print their layer names and gradients
+        # for name, param in learner.named_parameters():
+        #     if param.requires_grad:
+        #         gradient = grad_params[grad_counter]
+        #         print(f"Layer: {name}")  # Print layer name
+        #         print(f"Parameter Shape: {param.shape}")
+        #         print(f"Gradient Shape: {gradient.shape if gradient is not None else 'None'}")
+        #         print(f"Gradient Values: {gradient}")  # Print gradient values
+        #         grad_counter += 1
+        #     else:
+        #         gradient = None
+        #     gradients.append(gradient)
+        # exit()
         learner.adapt(adaptation_error, allow_unused=True, allow_nograd=True)
+        
 
     # Evaluate the adapted model
-    predictions = learner(evaluation_data).logits
+    if not use_custom:
+        predictions = learner(evaluation_data).logits
+    else:
+        predictions = learner(evaluation_data)[1]
     evaluation_error = loss(predictions, evaluation_labels)
     evaluation_accuracy = accuracy(predictions, evaluation_labels)
     return evaluation_error, evaluation_accuracy
@@ -104,8 +139,14 @@ def eval_huggingface(
     loss = nn.CrossEntropyLoss(reduction='mean')
     return eval(maml, meta_batch_size, adaptation_steps, shots, ways, tasksets, loss, device)
 
-def get_model(model_name='google/vit-base-patch16-224-in21k', ways=5):
-    model = ViTForImageClassification.from_pretrained(model_name, ignore_mismatched_sizes=True, num_labels=ways)
+def get_model(model_name='google/vit-base-patch16-224-in21k', ways=5, use_custom=False):
+    source_model = ViTForImageClassification.from_pretrained(model_name, ignore_mismatched_sizes=True, num_labels=ways)
+    if use_custom:
+        config = source_model.config
+        model = ClassificationModel(config)
+        clone_model_weight(source_model, model)
+    else:
+        model = source_model
     # Optionally disable memory efficient attention in model config if available.
     if hasattr(model.config, 'use_memory_efficient_attention'):
         model.config.use_memory_efficient_attention = False
@@ -117,14 +158,15 @@ def main(
         ways=5,
         shots=1,
         meta_lr=0.0001,
-        fast_lr=0.01,
+        fast_lr=0.1,
         meta_batch_size=32,
         adaptation_steps=1,
         num_iterations=1000,
         cuda=True,
         seed=42,
         save_dir = "./weights",
-        use_peft=True,
+        use_peft=False,
+        use_custom=False,
         dataset='miniimagenet',
 ):
     random.seed(seed)
@@ -154,15 +196,18 @@ def main(
         # Define the LoRA configuration.
         # Adjust parameters such as r (rank), lora_alpha, and target_modules as needed.
         print("----------Using LoRA------------")
-        lora_config = LoraConfig(
-                    r=16,
-                    lora_alpha=16,
-                    target_modules=["query", "key", "value", "attention_output"],
-                    lora_dropout=0.0,
-                    bias="none",
-                    modules_to_save=["classifier"],
-        )
-        model, _ = get_lora_model(model, None, lora_config)
+        # Define LoRA Configuration
+        lora_config = {
+            "r": 16,  # LoRA rank
+            "lora_alpha": 16,  # Scaling factor
+            "lora_dropout": 0.0,  # Dropout applied to LoRA layers
+            "target_modules": ["query", "key", "value", "attention_output"],  # LoRA modules
+            "bias": "none",  # No bias
+            "modules_to_save": ["classifier"],  # Preserve classifier weights
+        }
+
+        # Apply LoRA to the ViT model
+        # lora.inject_lora(model, **lora_config)
 
     # Optionally, print out trainable parameters:
     trainable_param = trainable_parameter_cnt(model)
@@ -173,7 +218,7 @@ def main(
 
     # Create model
     model.to(device)
-    maml = l2l.algorithms.MAML(model, lr=fast_lr, first_order=True)
+    maml = l2l.algorithms.MAML(model, lr=fast_lr, first_order=False)
     opt = optim.Adam(maml.parameters(), meta_lr)
     loss = nn.CrossEntropyLoss(reduction='mean')
 
@@ -195,7 +240,8 @@ def main(
                                                                 adaptation_steps,
                                                                 shots,
                                                                 ways,
-                                                                device)
+                                                                device,
+                                                                use_custom)
                 evaluation_error.backward()
                 meta_train_error += evaluation_error.item()
                 meta_train_accuracy += evaluation_accuracy.item()
@@ -209,7 +255,8 @@ def main(
                                                                 adaptation_steps,
                                                                 shots,
                                                                 ways,
-                                                                device)
+                                                                device,
+                                                                use_custom)
                 meta_valid_error += evaluation_error.item()
                 meta_valid_accuracy += evaluation_accuracy.item()
 
@@ -220,7 +267,12 @@ def main(
             print('Meta Train Accuracy', meta_train_accuracy / meta_batch_size)
             print('Meta Valid Error', meta_valid_error / meta_batch_size)
             print('Meta Valid Accuracy', meta_valid_accuracy / meta_batch_size)
-
+            # for name, param in learner.named_parameters():
+            #     if param.requires_grad:
+            #         print(f"Layer: {name}")  # Print layer name
+            #         print(f"Parameter Shape: {param.shape}")
+            #         print(f"Gradient Shape: {param.grad.shape if param.grad is not None else 'None'}")
+            #         print(f"Gradient Values: {param.grad}")  # Print gradient values
             # Average the accumulated gradients and optimize
             for p in maml.parameters():
                 if p.grad is not None:
@@ -239,8 +291,9 @@ def main(
 
 
 if __name__ == '__main__':
-    model, _ = get_model()
-    main(model, dataset='omniglot')
+    use_custom = True
+    model, _ = get_model(use_custom=use_custom)
+    main(model, dataset='omniglot',use_custom=use_custom)
     # meta_test_error, meta_test_accuracy = eval_huggingface(model)
     # print('Meta Test Error', meta_test_error)
     # print('Meta Test Accuracy', meta_test_accuracy)
