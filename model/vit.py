@@ -6,6 +6,9 @@ from torch import nn
 from transformers import ViTConfig, ViTPreTrainedModel
 from transformers.activations import ACT2FN
 
+import loratorch as lora
+
+
 
 class ViTEmbeddings(nn.Module):
     """
@@ -23,6 +26,12 @@ class ViTEmbeddings(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.patch_size = config.patch_size
         self.config = config
+
+        if config.use_peft:
+            self.cls_token.requires_grad = False
+            if self.mask_token is not None:
+                self.mask_token.requires_grad = False
+            self.position_embeddings.requires_grad = False
 
     def interpolate_pos_encoding(self, embeddings: torch.Tensor, height: int, width: int) -> torch.Tensor:
         """
@@ -125,8 +134,16 @@ class ViTPatchEmbeddings(nn.Module):
         self.patch_size = patch_size
         self.num_channels = num_channels
         self.num_patches = num_patches
-
-        self.projection = nn.Conv2d(num_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
+        if config.use_peft:
+            if isinstance(patch_size, tuple):
+                p = patch_size[0]
+            self.projection = lora.Conv2d(
+                    num_channels, hidden_size, kernel_size=p, stride=p,
+                    r = config.peft_config.r, lora_alpha = config.peft_config.lora_alpha
+                )
+            lora.mark_only_lora_as_trainable(self.projection)
+        else:
+            self.projection = nn.Conv2d(num_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, pixel_values: torch.Tensor, interpolate_pos_encoding: bool = False) -> torch.Tensor:
         batch_size, num_channels, height, width = pixel_values.shape
@@ -157,9 +174,26 @@ class ViTSelfAttention(nn.Module):
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.embed_size = self.num_attention_heads * self.attention_head_size
 
-        self.query = nn.Linear(config.hidden_size, self.embed_size, bias=config.qkv_bias)
-        self.key = nn.Linear(config.hidden_size, self.embed_size, bias=config.qkv_bias)
-        self.value = nn.Linear(config.hidden_size, self.embed_size, bias=config.qkv_bias)
+        if config.use_peft:
+            self.query = lora.Linear(
+                                config.hidden_size, self.embed_size, bias=config.qkv_bias,
+                                r = config.peft_config.r, lora_alpha = config.peft_config.lora_alpha
+                            )
+            self.key = lora.Linear(
+                                config.hidden_size, self.embed_size, bias=config.qkv_bias,
+                                r = config.peft_config.r, lora_alpha = config.peft_config.lora_alpha
+                            )
+            self.value = lora.Linear(
+                                config.hidden_size, self.embed_size, bias=config.qkv_bias,
+                                r = config.peft_config.r, lora_alpha = config.peft_config.lora_alpha
+                            )
+            lora.mark_only_lora_as_trainable(self.query)
+            lora.mark_only_lora_as_trainable(self.key)
+            lora.mark_only_lora_as_trainable(self.value)
+        else:
+            self.query = nn.Linear(config.hidden_size, self.embed_size, bias=config.qkv_bias)
+            self.key = nn.Linear(config.hidden_size, self.embed_size, bias=config.qkv_bias)
+            self.value = nn.Linear(config.hidden_size, self.embed_size, bias=config.qkv_bias)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
@@ -318,7 +352,14 @@ class ViTSelfOutput(nn.Module):
 
     def __init__(self, config: ViTConfig) -> None:
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        if config.use_peft:
+            self.dense = lora.Linear(
+                            config.hidden_size, config.hidden_size,
+                            r = config.peft_config.r, lora_alpha = config.peft_config.lora_alpha
+                        )
+            lora.mark_only_lora_as_trainable(self.dense)
+        else:
+            self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
@@ -331,7 +372,14 @@ class ViTSelfOutput(nn.Module):
 class ViTIntermediate(nn.Module):
     def __init__(self, config: ViTConfig) -> None:
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
+        if config.use_peft:
+            self.dense = lora.Linear(
+                    config.hidden_size, config.intermediate_size,
+                    r = config.peft_config.r, lora_alpha = config.peft_config.lora_alpha
+                )
+            lora.mark_only_lora_as_trainable(self.dense)
+        else:
+            self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
         if isinstance(config.hidden_act, str):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
         else:
@@ -346,7 +394,14 @@ class ViTIntermediate(nn.Module):
 class ViTOutput(nn.Module):
     def __init__(self, config: ViTConfig) -> None:
         super().__init__()
-        self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
+        if config.use_peft:
+            self.dense = lora.Linear(
+                    config.intermediate_size, config.hidden_size,
+                    r = config.peft_config.r, lora_alpha = config.peft_config.lora_alpha
+                )
+            lora.mark_only_lora_as_trainable(self.dense)
+        else:
+            self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
@@ -374,6 +429,12 @@ class ViTLayer(nn.Module):
         self.output = ViTOutput(config)
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+
+        if config.use_peft:
+            for name, param in self.layernorm_before.named_parameters():
+                param.requires_grad = False
+            for name, param in self.layernorm_after.named_parameters():
+                param.requires_grad = False
 
     def forward(
         self,
@@ -406,7 +467,11 @@ class ViTLayer(nn.Module):
 class ViTPooler(nn.Module):
     def __init__(self, config: ViTConfig):
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        if config.use_peft:
+            self.dense = lora.Linear(config.hidden_size, config.hidden_size)
+            lora.mark_only_lora_as_trainable(self.dense)
+        else:
+            self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.activation = nn.Tanh()
 
     def forward(self, hidden_states):
@@ -466,6 +531,9 @@ class ViTModel(ViTPreTrainedModel):
         self.layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.pooler = ViTPooler(config) if add_pooling_layer else None
 
+        if config.use_peft:
+            for name, param in self.layernorm.named_parameters():
+                param.requires_grad = False
         # Initialize weights and apply final processing
         self.post_init()
 

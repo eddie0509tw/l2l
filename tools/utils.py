@@ -157,18 +157,25 @@ def clone(learner):
                 allow_unused=allow_unused,
                 allow_nograd=allow_nograd)
 
-def clone_model_weight(source_model, target_model):
+def clone_model_weight(source_model, target_model, debug=False):
+    source_param = {name: param for name, param in source_model.named_parameters()}
     # Copy weights from pretrained model to local model
-    for (name, param), (local_name, local_param) in zip(source_model.named_parameters(), target_model.named_parameters()):
-        if param.shape == local_param.shape:  # Ensure shapes match
-            local_param.data.copy_(param.data)
-            print(f"Param Copied {name} -> {local_name}")  # Log successful copies
-        else:
-            raise ValueError(f"Param shape mismatch: {name}/{param.shape} != {local_name}/{local_param.shape}")
+    for local_name, local_param in target_model.named_parameters():
+        if local_name in source_param:  # Ensure shapes match
+            try:
+                param = source_param[local_name]
+                local_param.data.copy_(param.data)
+                if debug:
+                    print(f"Param Copied {local_name}")  # Log successful copies
+            except:
+                raise ValueError(f"Param shape mismatch: {param.shape} != {local_name}/{local_param.shape}")
+    source_buffers = {name: buffer for name, buffer in source_model.named_buffers()}
     # Copy buffers (like LayerNorm running stats)
-    for (name, buffer), (local_name, local_buffer) in zip(source_model.named_buffers(), target_model.named_buffers()):
-        if buffer.shape == local_buffer.shape:
+    for local_name, local_buffer in target_model.named_buffers():
+        if local_name in source_buffers:
+            buffer = source_buffers[local_name]
             local_buffer.data.copy_(buffer.data)
-            print(f"Copied buffer {name} -> {local_name}")
+            if debug:
+                print(f"Buffer Copied {local_name}")
         else:
-            raise ValueError(f"Buffer shape mismatch: {name}/{param.shape} != {local_name}/{local_param.shape}")
+            raise ValueError(f"Buffer shape mismatch: {param.shape} != {local_name}/{local_param.shape}")
