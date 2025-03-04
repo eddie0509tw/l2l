@@ -230,7 +230,8 @@ def main(
                     p.grad.data.mul_(1.0 / meta_batch_size)
             opt.step()
 
-    meta_test_error, meta_test_accuracy = eval(maml, meta_batch_size, adaptation_steps, shots, ways, tasksets, loss, device)
+    meta_test_error, meta_test_accuracy = eval(
+        maml, meta_batch_size, adaptation_steps, shots, ways, tasksets, loss, device, use_custom)
     print('Meta Test Error', meta_test_error / meta_batch_size)
     print('Meta Test Accuracy', meta_test_accuracy / meta_batch_size)
 
@@ -239,7 +240,6 @@ def main(
     maml.module.save_pretrained(save_dir)
     # feature_extractor.save_pretrained(save_dir)
     print(f"Model and feature extractor saved to {save_dir}")
-
 
 if __name__ == '__main__':
     n_ways = 5

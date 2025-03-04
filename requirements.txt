@@ -3,4 +3,6 @@ transformers
 lightning
 hydra-core
 peft
-higher
+opencv-python
+jupyter 
+jupyterlab

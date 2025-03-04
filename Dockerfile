@@ -21,11 +21,15 @@ RUN apt-get update && apt-get install -y \
     sudo \
     htop \
     tmux \
+    openssh-server \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install git+https://github.com/Baijiong-Lin/LoRA-Torch
+RUN python3 -m ipykernel install --name docker_env --display-name "Python (Docker)"
+
+EXPOSE 8888
 
 WORKDIR /workspace
