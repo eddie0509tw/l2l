@@ -1,3 +1,17 @@
+# Copyright 2020 The HuggingFace Team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -622,7 +636,12 @@ class DisentangledSelfAttention(nn.Module):
                 The embedding of relative distances. It's a tensor of shape [\\(2 \\times
                 \\text{max_relative_positions}\\), *hidden_size*].
 
-
+        Returns:
+            context_layer (`torch.FloatTensor`): 
+                Contextulized output, it's of shape [*B*, *N*, *E*] where *B* is the batch size, 
+                *N* is the maximum sequence length and *E* is the hidden size.
+            attention_probs (`torch.FloatTensor`): 
+                The attention matrix if *output_attentions* is True, it's of shape [*B*, *N*, *N*].
         """
         if query_states is None:
             qp = self.in_proj(hidden_states)  # .split(self.all_head_size, dim=-1)
@@ -757,7 +776,7 @@ class ContextPooler(nn.Module):
 # Testing the model
 if __name__ == "__main__":
     from transformers import DebertaConfig
-    model_name = "microsoft/deberta-base"
+    model_name = "microsoft/deberta-large"
     # task_name = "cola"
     # max_seq_length = 64
     # do_train = True
@@ -784,6 +803,6 @@ if __name__ == "__main__":
     # print(help(DebertaConfig))
     config = DebertaConfig().from_pretrained(model_name)
     model = DebertaForSequenceClassification(config)
-    print(model)
+    print(config)
 
 

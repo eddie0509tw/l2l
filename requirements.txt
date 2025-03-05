@@ -6,3 +6,4 @@ peft
 opencv-python
 jupyter 
 jupyterlab
+datasets
