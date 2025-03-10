@@ -221,7 +221,7 @@ class DebertaModel(DebertaPreTrainedModel):
                 query_states = layer(
                     hidden_states,
                     attention_mask,
-                    return_att=False,
+                    output_attentions=False,
                     query_states=query_states,
                     relative_pos=rel_pos,
                     rel_embeddings=rel_embeddings,
@@ -308,8 +308,44 @@ class DebertaEmbeddings(nn.Module):
 
         embeddings = self.dropout(embeddings)
         return embeddings
-    
 
+
+class ConvLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        kernel_size = getattr(config, "conv_kernel_size", 3)
+        groups = getattr(config, "conv_groups", 1)
+        self.conv_act = getattr(config, "conv_act", "tanh")
+        self.conv = nn.Conv1d(
+            config.hidden_size, config.hidden_size, kernel_size, padding=(kernel_size - 1) // 2, groups=groups
+        )
+        self.LayerNorm = LayerNorm(config.hidden_size, config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.config = config
+
+    def forward(self, hidden_states, residual_states, input_mask):
+        out = self.conv(hidden_states.permute(0, 2, 1).contiguous()).permute(0, 2, 1).contiguous()
+        rmask = (1 - input_mask).bool()
+        out.masked_fill_(rmask.unsqueeze(-1).expand(out.size()), 0)
+        out = ACT2FN[self.conv_act](self.dropout(out))
+
+        layer_norm_input = residual_states + out
+        output = self.LayerNorm(layer_norm_input).to(layer_norm_input)
+
+        if input_mask is None:
+            output_states = output
+        else:
+            if input_mask.dim() != layer_norm_input.dim():
+                if input_mask.dim() == 4:
+                    input_mask = input_mask.squeeze(1).squeeze(1)
+                input_mask = input_mask.unsqueeze(2)
+
+            input_mask = input_mask.to(output.dtype)
+            output_states = output * input_mask
+
+        return output_states
+
+#@TODO: Add the conv layer to the model
 class DebertaEncoder(nn.Module):
     """Modified BertEncoder with relative position bias support"""
 
@@ -339,9 +375,10 @@ class DebertaEncoder(nn.Module):
 
     def get_rel_pos(self, hidden_states, query_states=None, relative_pos=None):
         if self.relative_attention and relative_pos is None:
-            # hidden_states: bsz x seqlen x embed_dim
-            q = query_states.size(-2) if query_states is not None else hidden_states.size(-2) # seqlen
-            relative_pos = build_relative_position(q, hidden_states.size(-2), hidden_states.device)
+            if query_states is not None:
+                relative_pos = build_relative_position(query_states, hidden_states)
+            else:
+                relative_pos = build_relative_position(hidden_states, hidden_states)
         return relative_pos
 
     def forward(
@@ -412,24 +449,24 @@ class DebertaLayer(nn.Module):
         self,
         hidden_states,
         attention_mask,
-        return_att=False,
+        output_attentions=False,
         query_states=None,
         relative_pos=None,
         rel_embeddings=None,
     ):
-        attention_output = self.attention(
+        attention_output, att_matrix = self.attention(
             hidden_states,
             attention_mask,
-            return_att=return_att,
+            output_attentions=output_attentions,
             query_states=query_states,
             relative_pos=relative_pos,
             rel_embeddings=rel_embeddings,
         )
-        if return_att:
+        if output_attentions:
             attention_output, att_matrix = attention_output
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
-        if return_att:
+        if output_attentions:
             return (layer_output, att_matrix)
         else:
             return layer_output
@@ -468,7 +505,7 @@ class DebertaOutput(nn.Module):
 class DebertaAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.self = DisentangledSelfAttention(config)
+        self.dsa = DisentangledSelfAttention(config)
         self.output = DebertaSelfOutput(config)
         self.config = config
 
@@ -476,29 +513,27 @@ class DebertaAttention(nn.Module):
         self,
         hidden_states,
         attention_mask,
-        return_att=False,
+        output_attentions: bool = False,
         query_states=None,
         relative_pos=None,
         rel_embeddings=None,
-    ):
-        self_output = self.self(
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        self_output, att_matrix = self.dsa(
             hidden_states,
             attention_mask,
-            return_att,
+            output_attentions,
             query_states=query_states,
             relative_pos=relative_pos,
             rel_embeddings=rel_embeddings,
         )
-        if return_att:
-            self_output, att_matrix = self_output
         if query_states is None:
             query_states = hidden_states
         attention_output = self.output(self_output, query_states)
 
-        if return_att:
+        if output_attentions:
             return (attention_output, att_matrix)
         else:
-            return attention_output
+            return (attention_output, None)
 
 class DebertaSelfOutput(nn.Module):
     def __init__(self, config):
@@ -537,7 +572,7 @@ def uneven_size_corrected(p2c_att, query_layer, key_layer, relative_pos):
     else:
         return p2c_att
 
-
+#@TODO Apply bucket to encode relative positions
 @torch.jit.script
 def build_rpos(query_layer, key_layer, relative_pos):
     if query_layer.size(-2) != key_layer.size(-2):
@@ -545,7 +580,7 @@ def build_rpos(query_layer, key_layer, relative_pos):
     else:
         return relative_pos
     
-
+#@TODO Apply Share projection to encode relative positions
 class DisentangledSelfAttention(nn.Module):
     """
     Disentangled self-attention module

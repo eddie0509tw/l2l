@@ -1,0 +1,4 @@
+name: cola
+max_seq_length: 64
+num_labels: 2
+learning_rate: 5e-5

@@ -7,3 +7,5 @@ opencv-python
 jupyter 
 jupyterlab
 datasets
+evaluate
+wandb

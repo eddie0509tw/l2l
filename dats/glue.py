@@ -47,14 +47,14 @@ def collate_fn(batch, max_seq_length=128):
     }
     
 def collate_fn_glue(cfg):
-    return partial(collate_fn, max_seq_length=cfg['max_seq_length'])
+    return partial(collate_fn, max_seq_length=cfg.task.max_seq_length)
 
-def preprocess_glue(cfg, datasets, tokenizer, is_regression=False):
+def preprocess_glue(cfg, datasets, tokenizer):
 
-    name = cfg['dataset_name']
+    name = cfg.dataset.name
     if name != 'glue':
         raise NotImplementedError(f"Dataset {name} not supported or using the wrong processing function")
-    task = cfg['task_name']
+    task = cfg.task.name
     # Labels
     if task is not None:
         is_regression = task == "stsb"
@@ -90,7 +90,7 @@ def preprocess_glue(cfg, datasets, tokenizer, is_regression=False):
                 sentence1_key, sentence2_key = non_label_column_names[0], None
 
     # Padding strategy
-    if cfg.get('pad_to_max_length', None) and cfg['pad_to_max_length']:
+    if cfg.task.get('pad_to_max_length', None):
         padding = "max_length"
     else:
         # We will pad later, dynamically at batch creation, to the max sequence length in each batch
@@ -116,7 +116,7 @@ def preprocess_glue(cfg, datasets, tokenizer, is_regression=False):
     # elif task is None and not is_regression:
     #     label_to_id = {v: i for i, v in enumerate(label_list)}
 
-    max_seq_length = cfg.get('max_seq_length', None)
+    max_seq_length = cfg.task.get('max_seq_length', None)
     if max_seq_length is None:
         max_seq_length = tokenizer.model_max_length
 

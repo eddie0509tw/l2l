@@ -2,16 +2,13 @@ import torch
 import numpy as np
 import loratorch as lora
 from peft import get_peft_model
+from collections.abc import Mapping
 
 def parameter_cnt(model):
     return sum(p.numel() for p in model.parameters())
 
 def trainable_parameter_cnt(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-def accuracy(predictions, targets):
-    predictions = predictions.argmax(dim=1).view(targets.shape)
-    return (predictions == targets).sum().float() / targets.size(0)
 
 def cmp_parameters(model1, model2, check_grad=False):
     for p1, p2 in zip(model1.parameters(), model2.parameters()):
@@ -50,19 +47,6 @@ def get_lora_model(base_model, feature_extractor, lora_config):
     peft_model.forward = custom_forward
     
     return peft_model, feature_extractor
-
-def get_lora_model_v2(module, lora_config, prefix=""):
-
-    for name, child in module.named_children():
-        full_name = f"{prefix}.{name}" if prefix else name
-        print(f"Layer: {full_name}, Type: {child.__class__.__name__}")
-
-        # Print parameter shapes for this layer
-        for param_name, param in child.named_parameters(recurse=False):
-            print(f"    ├── Param: {param_name}, Shape: {param.shape}")
-
-        # Recurse into submodules
-        get_lora_model_v2(child, lora_config, prefix=full_name)
 
 
 def clone_module(module, memo=None):
@@ -179,3 +163,19 @@ def clone_model_weight(source_model, target_model, debug=False):
                 print(f"Buffer Copied {local_name}")
         else:
             raise ValueError(f"Buffer shape mismatch: {param.shape} != {local_name}/{local_param.shape}")
+
+
+def nested_numpify(tensors):
+    "Numpify `tensors` (even if it's a nested list/tuple/dict of tensors)."
+    if isinstance(tensors, (list, tuple)):
+        return type(tensors)(nested_numpify(t) for t in tensors)
+    if isinstance(tensors, Mapping):
+        return type(tensors)({k: nested_numpify(t) for k, t in tensors.items()})
+
+    t = tensors.cpu()
+    if t.dtype == torch.bfloat16:
+        # As of Numpy 1.21.4, NumPy does not support bfloat16 (see
+        # https://github.com/numpy/numpy/blob/a47ecdea856986cd60eabbd53265c2ca5916ad5d/doc/source/user/basics.types.rst ).
+        # Until Numpy adds bfloat16, we must convert float32.
+        t = t.to(torch.float32)
+    return t.numpy()
