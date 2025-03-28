@@ -76,11 +76,23 @@ def build_dataset(cfg):
             
         # data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
         train_loader = DataLoader(
-            train_dataset, batch_size=cfg.batch_size, collate_fn=collate_fn_glue(cfg), shuffle=True)
+            train_dataset, 
+            batch_size=cfg.batch_size,
+            num_workers=cfg.num_workers, 
+            collate_fn=collate_fn_glue(cfg),
+            shuffle=True)
+
         val_loader = DataLoader(
-            val_dataset, batch_size=cfg.batch_size, collate_fn=collate_fn_glue(cfg))
+            val_dataset, 
+            batch_size=cfg.batch_size, 
+            num_workers=cfg.num_workers, 
+            collate_fn=collate_fn_glue(cfg))
+
         test_loader = DataLoader(
-            test_dataset, batch_size=cfg.batch_size, collate_fn=collate_fn_glue(cfg))
+            test_dataset, 
+            batch_size=cfg.batch_size, 
+            num_workers=cfg.num_workers, 
+            collate_fn=collate_fn_glue(cfg))
 
         meta_dataloader.update({
             'train': train_loader,

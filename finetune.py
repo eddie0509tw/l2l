@@ -43,25 +43,45 @@ class Finetuner(LightningModule):
         os.makedirs(self.output_path, exist_ok=True)
 
         self.model = build_model(cfg)
+        # for name, param in self.model.named_parameters():
+        #     if param.requires_grad:
+        #         print(name, param.shape)
         self.validator = build_validator(cfg)
         
         self.eval_step = cfg.get("eval_step", 1000)
+        
+        self.output_attentions = cfg.model.get("output_attentions", False)
         self.save_hyperparameters()
+        
+        if cfg.load_pretrained:
+            model_weight_path = cfg.get("model_weight_path", None)
+            use_hf_weights = cfg.model.get("use_hf_weights", False)
+            model_name = cfg.model.get("model_name", None)
+
+            if not model_weight_path and use_hf_weights:
+                cache_dir = os.path.join(
+                    cfg.dataset.root_dir, cfg.dataset.name, cfg.model.name, "weights")
+                model_weight_path = cache_dir
+
+            self.load_model_weight(
+                model_weight_path, 
+                use_hf_weights=use_hf_weights, 
+                model_name=model_name)
 
         self.init_wandb(cfg)
 
     def init_wandb(self, cfg):
         """Initializes Weights & Biases (wandb) using configuration settings."""
         wandb.init(
-            project=cfg.get("project_name", "default"),
-            entity=cfg.get("entity", None),
+            project=cfg.wandb.get("project", "default"),
+            entity=cfg.wandb.get("entity", None),
             dir=self.output_path,
-            group=cfg.get("group", None),
-            name=cfg.get("name", None),
-            tags=cfg.get("tags", None),
-            notes=cfg.get("notes", None),
-            id=cfg.get("id", None),
-            resume=cfg.get("resume", None)
+            group=cfg.wandb.get("group", None),
+            name=cfg.wandb.get("name", None),
+            tags=cfg.wandb.get("tags", None),
+            notes=cfg.wandb.get("notes", None),
+            id=cfg.wandb.get("id", None),
+            resume=cfg.wandb.get("resume", None)
         )
 
     def configure_optimizers(self):
@@ -74,13 +94,24 @@ class Finetuner(LightningModule):
 
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
-    def load_model_weight(self, model_weight_path):
-        if os.path.exists(model_weight_path):
-            state_dict = torch.load(model_weight_path)['state_dict']
-            state_dict = {
-                k.replace("model.", ""): v for k, v in state_dict.items()}
+    def load_model_weight(self, model_weight_path=None, **kwargs):
+        print(f"Loading model weights from: {model_weight_path}")
+        if model_weight_path is not None:
+            if kwargs["use_hf_weights"]:
+                if not os.path.exists(model_weight_path):
+                    os.makedirs(model_weight_path, exist_ok=True)
+                self.model.from_pretrained(
+                    kwargs["model_name"], cache_dir=model_weight_path)
 
-            self.model.load_state_dict(state_dict, strict=False)
+            elif os.path.exists(model_weight_path):
+                state_dict = torch.load(model_weight_path)['state_dict']
+                state_dict = {
+                    k.replace("model.", ""): v for k, v in state_dict.items()}
+                self.model.load_state_dict(state_dict, strict=False)
+
+            else:
+                raise FileNotFoundError(
+                    f"Model wrong weigths path: {model_weight_path} or you can use HF weights")
         else:
             raise FileNotFoundError(
                 f"Model weight file not found: {model_weight_path}")
@@ -94,7 +125,8 @@ class Finetuner(LightningModule):
         outputs = self.model(
             input_ids=input_ids, 
             attention_mask=attention_mask, 
-            labels=labels)
+            labels=labels,
+            output_attentions=self.output_attentions)
         loss, logits, all_hidden_states, all_attentions = outputs
         # loss_dict = self.criterion(outputs, targets)
 
@@ -110,7 +142,6 @@ class Finetuner(LightningModule):
         loss, logits, all_hidden_states, all_attentions = self.forward(batch, batch_idx)
 
         log = {}
-
         log[f"train/loss"] = loss.detach()
         
         wandb.log({"train/loss": loss.item(), "step": self.global_step})
@@ -138,9 +169,11 @@ class Finetuner(LightningModule):
             batch_size=self.batch_size)
 
         preds = logits.detach()
-        metrics = self.validator.get_metrics(preds, batch['labels'])
+        labels = batch['labels']
+        results = self.validator.get_metrics(preds, labels)
+        self.validator.update_metrics(results)
 
-        return {"metrics": metrics, "loss": loss}
+        return {"metrics": results, "loss": loss}
 
     def on_train_batch_end(self, out, batch, batch_idx):
         pass
@@ -154,13 +187,13 @@ class Finetuner(LightningModule):
                 wandb.log({f"val/{k}": v, "step": self.global_step})
 
     def on_validation_epoch_end(self):
-        self.validator.get_result()
+        self.validator.get_results()
         self.validator.init_metrics()
+        exit()
 
 
 @hydra.main(config_path="conf", config_name="finetune", version_base="1.3")
 def run(cfg: DictConfig):
-    print(cfg)
     save_dir = (f"{cfg.dataset.name}_result/{cfg.task.name}/{cfg.model.name}")
     save_path = os.path.join(cfg.root_dir, save_dir)
     meta_dataloader = build_dataset(cfg)

@@ -34,3 +34,5 @@ wandb:
 
 # GPU ID
 gpu: 0
+
+load_pretrained: True

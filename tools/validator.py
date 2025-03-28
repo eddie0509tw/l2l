@@ -1,5 +1,6 @@
 import torch
 from .metric import compute_metrics
+from .utils import nested_numpify
 
 
 def build_validator(config):
@@ -30,7 +31,7 @@ class BaseValidator:
         # Print the header
         print(self.get_desc())
         format_str = "%22s %11d" + " %11.4f" * len(self.metric_names)
-        task_name = self.config.get('task_name', None)
+        task_name = self.config.task.get('name', None)
         print(format_str % (
                     task_name,
                     self.num_cnts,
@@ -58,9 +59,11 @@ class GlueValidator(BaseValidator):
                 )
         
     def get_metrics(self, preds, labels):
-        dataset = self.config.get('dataset_name', None)
+        preds = nested_numpify(preds)
+        labels = nested_numpify(labels)
+        dataset = self.config.dataset.get('name', None)
         if dataset == 'glue':
-            task = self.config.get('task_name', None)
+            task = self.config.task.get('name', None)
             dtype = labels.dtype
             if task is not None:
                 is_regression = task == "stsb"
@@ -72,9 +75,8 @@ class GlueValidator(BaseValidator):
         else:
             raise NotImplementedError("Dataset name not provided/supported")
     
-    def update_metrics(self, preds, labels):
+    def update_metrics(self, results):
         '''Update and accum the metrics with the new predictions and labels.'''
-        results = self.get_metrics(preds, labels)
         self.num_cnts += 1
         for k, v in results.items():
             self.metric_names.append(k)

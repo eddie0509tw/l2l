@@ -29,24 +29,24 @@ def cmp_parameters(model1, model2, check_grad=False):
                 return False
     return True
 
-def get_lora_model(base_model, feature_extractor, lora_config):
+def get_lora_model(base_model, lora_config):
     # Wrap model with LoRA
     peft_model = get_peft_model(base_model, lora_config)
     
-    # Override forward
-    original_forward = peft_model.forward
+    # # Override forward
+    # original_forward = peft_model.forward
 
-    def custom_forward(*args, **kwargs):
-        # If 'input_ids' is there, remove it for Vision Transformers
-        if "input_ids" in kwargs:
-            print("Removing 'input_ids' from forward")
-            kwargs.pop("input_ids")
-        # The vision model expects pixel_values
-        return original_forward(*args, **kwargs)
+    # def custom_forward(*args, **kwargs):
+    #     # If 'input_ids' is there, remove it for Vision Transformers
+    #     if "input_ids" in kwargs:
+    #         print("Removing 'input_ids' from forward")
+    #         kwargs.pop("input_ids")
+    #     # The vision model expects pixel_values
+    #     return original_forward(*args, **kwargs)
 
-    peft_model.forward = custom_forward
+    # peft_model.forward = custom_forward
     
-    return peft_model, feature_extractor
+    return peft_model
 
 
 def clone_module(module, memo=None):
@@ -179,3 +179,36 @@ def nested_numpify(tensors):
         # Until Numpy adds bfloat16, we must convert float32.
         t = t.to(torch.float32)
     return t.numpy()
+
+import os
+from transformers import AutoModel
+
+def load_huggingface_model(model_weight_path, model_name=None, cache_dir=None):
+    """
+    Loads model weights from a specified path. 
+    If the path does not exist, downloads the model to a cache directory.
+
+    Args:
+        model_weight_path (str): Path to the custom model weights.
+        model_name (str): Pretrained model name or path (default: microsoft/deberta-base).
+        cache_dir (str): Directory to store downloaded model weights.
+
+    Returns:
+        Loaded model instance.
+    """
+
+    os.makedirs(model_weight_path, exist_ok=True)
+
+    if os.path.exists(os.path.join(model_weight_path, "pytorch_model.bin")):
+        model = AutoModel.from_pretrained(model_weight_path)
+    
+    else:
+        print(f"Warning: Model weights not found at {model_weight_path}")
+        print(f"Downloading {model_name} to cache directory: {cache_dir}")
+
+        model = AutoModel.from_pretrained(model_name, cache_dir=cache_dir)
+
+        model.save_pretrained(model_weight_path)
+        print(f"Model saved to {model_weight_path} for future use.")
+
+    return model

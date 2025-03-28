@@ -250,18 +250,25 @@ class DebertaEmbeddings(nn.Module):
             self.position_embeddings = None
         else:
             self.position_embeddings = nn.Embedding(config.max_position_embeddings, self.embedding_size)
-        # distinguishing sentence A vs. sentence B in BERT-style tasks
+
         if config.type_vocab_size > 0:
             self.token_type_embeddings = nn.Embedding(config.type_vocab_size, self.embedding_size)
+        else:
+            self.token_type_embeddings = None
 
         if self.embedding_size != config.hidden_size:
             self.embed_proj = nn.Linear(self.embedding_size, config.hidden_size, bias=False)
+        else:
+            self.embed_proj = None
+
         self.LayerNorm = DebertaLayerNorm(config.hidden_size, config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.config = config
 
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
-        self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
+        self.register_buffer(
+            "position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)), persistent=False
+        )
 
     def forward(self, input_ids=None, token_type_ids=None, position_ids=None, mask=None, inputs_embeds=None):
         if input_ids is not None:
@@ -287,12 +294,12 @@ class DebertaEmbeddings(nn.Module):
 
         embeddings = inputs_embeds
         if self.position_biased_input:
-            embeddings += position_embeddings
-        if self.config.type_vocab_size > 0:
+            embeddings = embeddings + position_embeddings
+        if self.token_type_embeddings is not None:
             token_type_embeddings = self.token_type_embeddings(token_type_ids)
-            embeddings += token_type_embeddings
+            embeddings = embeddings + token_type_embeddings
 
-        if self.embedding_size != self.config.hidden_size:
+        if self.embed_proj is not None:
             embeddings = self.embed_proj(embeddings)
 
         embeddings = self.LayerNorm(embeddings)
@@ -308,6 +315,7 @@ class DebertaEmbeddings(nn.Module):
 
         embeddings = self.dropout(embeddings)
         return embeddings
+
 
 
 class ConvLayer(nn.Module):
@@ -462,8 +470,7 @@ class DebertaLayer(nn.Module):
             relative_pos=relative_pos,
             rel_embeddings=rel_embeddings,
         )
-        if output_attentions:
-            attention_output, att_matrix = attention_output
+
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
         if output_attentions:
@@ -505,7 +512,7 @@ class DebertaOutput(nn.Module):
 class DebertaAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.dsa = DisentangledSelfAttention(config)
+        self.self = DisentangledSelfAttention(config)
         self.output = DebertaSelfOutput(config)
         self.config = config
 
@@ -518,7 +525,7 @@ class DebertaAttention(nn.Module):
         relative_pos=None,
         rel_embeddings=None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        self_output, att_matrix = self.dsa(
+        self_output, att_matrix = self.self(
             hidden_states,
             attention_mask,
             output_attentions,
@@ -711,6 +718,8 @@ class DisentangledSelfAttention(nn.Module):
             attention_scores = self.head_logits_proj(attention_scores.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
 
         attention_mask = attention_mask.bool()
+        if attention_scores.dtype != query_layer.dtype:
+            attention_scores = attention_scores.to(query_layer.dtype)
         attention_scores = attention_scores.masked_fill(~(attention_mask), torch.finfo(query_layer.dtype).min)
         # bsz x height x length x dimension
         attention_probs = nn.functional.softmax(attention_scores, dim=-1)

@@ -1,3 +1,6 @@
 name: deberta_base
 model_name: "microsoft/deberta-base"
+use_hf_weights: True
 
+# Debugging configurations
+output_attentions: True
