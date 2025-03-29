@@ -276,7 +276,7 @@ class Linear(nn.Linear, LoraLayer):
         nn.Linear.__init__(self, in_features, out_features, **kwargs)
         LoraLayer.__init__(self, r=r, lora_alpha=lora_alpha, lora_dropout=lora_dropout, merge_weights=merge_weights)
 
-        self.lora_num = lora_nums
+        self.lora_nums = lora_nums
         self.blc_alpha = blc_alpha
         self.blc_weight = blc_weight
         
@@ -284,8 +284,9 @@ class Linear(nn.Linear, LoraLayer):
 
         # Actual trainable parameters
         if r > 0:
-            self.lora_route = nn.Linear(in_features, self.lora_num, bias=False)
-            for i in range(self.lora_num):
+            if self.lora_nums > 1:
+                self.lora_route = nn.Linear(in_features, self.lora_nums, bias=False)
+            for i in range(self.lora_nums):
                 setattr(self, f"lora_A{i}", nn.Linear(in_features, r, bias=False))
                 setattr(self, f"lora_B{i}", nn.Linear(r, out_features, bias=False))
 
@@ -300,23 +301,25 @@ class Linear(nn.Linear, LoraLayer):
         nn.Linear.reset_parameters(self)
         
         if hasattr(self, "lora_A0"):
-            for i in range(self.lora_num):
+            for i in range(self.lora_nums):
                 nn.init.kaiming_uniform_(getattr(self, f"lora_A{i}").weight, a=math.sqrt(5))
                 nn.init.zeros_(getattr(self, f"lora_B{i}").weight)
-
+        if hasattr(self, "lora_route"):
             nn.init.kaiming_uniform_(self.lora_route.weight, a=math.sqrt(5))
 
     def train(self, mode: bool = True):
         nn.Linear.train(self, mode)
-        self.lora_route.train(mode)
-        for i in range(self.lora_num):
+        if hasattr(self, "lora_route"):
+            self.lora_route.train(mode)
+        for i in range(self.lora_nums):
             getattr(self, f"lora_A{i}").train(mode)
             getattr(self, f"lora_B{i}").train(mode)
 
     def eval(self):
         nn.Linear.eval(self)
-        self.lora_route.eval()
-        for i in range(self.lora_num):
+        if hasattr(self, "lora_route"):
+            self.lora_route.eval()
+        for i in range(self.lora_nums):
             getattr(self, f"lora_A{i}").eval()
             getattr(self, f"lora_B{i}").eval()
 
@@ -344,10 +347,13 @@ class Linear(nn.Linear, LoraLayer):
             result = F.linear(x, transpose(self.weight, self.fan_in_fan_out), bias=self.bias)
             
             if self.r > 0:
-                route_weight = nn.functional.softmax(self.lora_route(x), dim=-1, dtype=torch.float32).to(result.dtype)
+                if self.lora_nums > 1:
+                    route_weight = nn.functional.softmax(self.lora_route(x), dim=-1, dtype=torch.float32).to(result.dtype)
 
-                for i in range(self.lora_num):
-                    result = result + torch.unsqueeze(route_weight[:,:,i], -1) * getattr(self, f"lora_B{i}")(getattr(self, f"lora_A{i}")(self.lora_dropout(x))) * self.scaling
+                    for i in range(self.lora_nums):
+                        result = result + torch.unsqueeze(route_weight[:,:,i], -1) * getattr(self, f"lora_B{i}")(getattr(self, f"lora_A{i}")(self.lora_dropout(x))) * self.scaling
+                else:
+                    result = result + getattr(self, f"lora_B0")(getattr(self, f"lora_A0")(self.lora_dropout(x))) * self.scaling
 
         blcls = torch.zeros(1)[0].to(result)
         if task_types != None:
@@ -356,7 +362,7 @@ class Linear(nn.Linear, LoraLayer):
                 blcls = self.cv_squared((
                     route_weight.sum(dim=(1)) * torch.where(
                         torch.concat(
-                            ((task_types==1).repeat(1, self.lora_num//2), (task_types==0).repeat(1, self.lora_num//2)), dim=-1
+                            ((task_types==1).repeat(1, self.lora_nums//2), (task_types==0).repeat(1, self.lora_nums//2)), dim=-1
                             ), 1.0+self.blc_alpha, 1.0-self.blc_alpha
                         )
                     ).flatten()

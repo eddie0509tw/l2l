@@ -1,7 +1,7 @@
 defaults:
   - _self_
   - dataset: glue
-  - task: cola
+  - task: mrpc
   - model: deberta
   - hydra: default.yaml
 
@@ -20,11 +20,6 @@ weight_decay: 1e-4
 scheduler:  # MultiStepLR
   milestones: [6, 8]
   gamma: 0.1
-
-# Lora configurations
-apply_lora: False
-lora_r: 16
-lora_alpha: 32
 
 # Wandb configurations
 wandb:

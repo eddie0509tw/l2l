@@ -13,6 +13,8 @@ from model import build_model
 # from tools.vis import save_attention_loc
 from tools.validator import build_validator
 
+from peft import get_peft_model, LoraConfig
+
 # Faster, but less precise
 torch.set_float32_matmul_precision("high")
 # sets seeds for numpy, torch and python.random.
@@ -32,7 +34,16 @@ class Finetuner(LightningModule):
         super().__init__()
 
         self.batch_size = cfg.get("batch_size")
+
         self.lr = cfg.task.get("learning_rate")
+        if not self.lr:
+            if cfg.get("learning_rate") is not None:
+                self.lr = cfg.get("learning_rate")
+            else:
+                raise ValueError(
+                        f"Learning rate not found in config file. Please check your config file."
+                    )
+
         self.weight_decay = cfg.get("weight_decay")
         if cfg.get("scheduler") is not None:
             s = cfg.get("scheduler")
@@ -68,6 +79,9 @@ class Finetuner(LightningModule):
                 use_hf_weights=use_hf_weights, 
                 model_name=model_name)
 
+        if cfg.model.get("apply_lora", False):
+            self.init_lora(cfg)
+
         self.init_wandb(cfg)
 
     def init_wandb(self, cfg):
@@ -83,6 +97,16 @@ class Finetuner(LightningModule):
             id=cfg.wandb.get("id", None),
             resume=cfg.wandb.get("resume", None)
         )
+    
+    def init_lora(self, cfg):
+        lora_meta_config = cfg.model.get("lora", None)
+        lora_config = LoraConfig(**lora_meta_config)
+        self.model = get_peft_model(self.model, lora_config)
+        self.model.print_trainable_parameters()
+        # for name, param in self.model.named_parameters():
+        #     if param.requires_grad:
+        #         print(name, param.shape)
+        # exit()
 
     def configure_optimizers(self):
         params = list(self.model.named_parameters())
@@ -189,13 +213,13 @@ class Finetuner(LightningModule):
     def on_validation_epoch_end(self):
         self.validator.get_results()
         self.validator.init_metrics()
-        exit()
 
 
 @hydra.main(config_path="conf", config_name="finetune", version_base="1.3")
 def run(cfg: DictConfig):
     save_dir = (f"{cfg.dataset.name}_result/{cfg.task.name}/{cfg.model.name}")
     save_path = os.path.join(cfg.root_dir, save_dir)
+    print(save_path)
     meta_dataloader = build_dataset(cfg)
     train_loader = meta_dataloader['train']
     val_loader = meta_dataloader['val']

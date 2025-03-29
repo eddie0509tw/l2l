@@ -78,8 +78,10 @@ class GlueValidator(BaseValidator):
     def update_metrics(self, results):
         '''Update and accum the metrics with the new predictions and labels.'''
         self.num_cnts += 1
+        if not self.metric_names:
+            self.metric_names = list(results.keys())
+
         for k, v in results.items():
-            self.metric_names.append(k)
             if k not in self.metrics:
                 self.metrics[k] = 0
             if isinstance(v, torch.Tensor):

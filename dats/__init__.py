@@ -1,5 +1,6 @@
 import os
 from datasets import load_dataset
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from transformers import AutoTokenizer, DataCollatorWithPadding
 from .glue import *
 from torch.utils.data import DataLoader
@@ -45,14 +46,13 @@ def build_dataset(cfg):
         cache_dir = os.path.join(cfg.dataset.root_dir, name, task)
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
-        print(cache_dir)
         os.environ["HF_DATASETS_CACHE"] = cache_dir
         datasets = load_dataset(name, task, cache_dir=cache_dir)
         if cfg.dataset.get('use_tokenizer', None):
             tokenizer = get_tokenizer(cfg, cache_dir=cache_dir)
             sentence1_key, sentence2_key, padding, max_seq_length, label_to_id = preprocess_glue(
                                     cfg, datasets, tokenizer)
-            print(sentence1_key, sentence2_key, padding, max_seq_length, label_to_id)
+
             datasets = datasets.map(lambda x: preprocess_function(
                                             x, tokenizer, sentence1_key, sentence2_key, \
                                             padding, max_seq_length, label_to_id
@@ -61,7 +61,11 @@ def build_dataset(cfg):
                                     load_from_cache_file=not cfg.dataset.get('overwrite_cache', False))
         columns_to_remove = []
         columns_to_remove.append('idx')
-        columns_to_remove.append('sentence')
+        if task == 'mrpc':
+            columns_to_remove.append('sentence1')
+            columns_to_remove.append('sentence2')
+        else:
+            columns_to_remove.append('sentence')
 
         datasets = datasets.remove_columns(columns_to_remove)
         train_dataset = datasets['train']
